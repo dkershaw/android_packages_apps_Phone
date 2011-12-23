@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2006 The Android Open Source Project
+ * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -109,8 +110,8 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
     private static final int EVENT_TTY_PREFERRED_MODE_CHANGED = 14;
     private static final int EVENT_TTY_MODE_GET = 15;
     private static final int EVENT_TTY_MODE_SET = 16;
-    private static final int EVENT_START_SIP_SERVICE = 17;
-
+    private static final int EVENT_TECHNOLOGY_CHANGED = 17;
+    private static final int EVENT_START_SIP_SERVICE = 18;
     // The MMI codes are also used by the InCallScreen.
     public static final int MMI_INITIATE = 51;
     public static final int MMI_COMPLETE = 52;
@@ -229,6 +230,8 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
     private boolean mTtyEnabled;
     // Current TTY operating mode selected by user
     private int mPreferredTtyMode = Phone.TTY_MODE_OFF;
+    private boolean mTtySetOnPowerUp = false;
+    private int mPhoneType;
 
     private String mVoiceQualityParam;
 
@@ -286,10 +289,19 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
         return mShouldRestoreMuteOnInCallResume;
     }
 
+    /*package*/void checkPhoneType() {
+        if (mPhoneType != phone.getPhoneType()) {
+            Log.d(LOG_TAG,"handleMessage: radio Technology has changed (" + phone.getPhoneName() + ")");
+            initForNewRadioTechnology();
+            mPhoneType = phone.getPhoneType();
+        }
+    }
+
     Handler mHandler = new Handler() {
         @Override
         public void handleMessage(Message msg) {
             Phone.State phoneState;
+            checkPhoneType();
             switch (msg.what) {
                 // Starts the SIP service. It's a no-op if SIP API is not supported
                 // on the deivce.
@@ -436,6 +448,10 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
                 case EVENT_TTY_MODE_SET:
                     handleSetTTYModeResponse(msg);
                     break;
+
+                case EVENT_TECHNOLOGY_CHANGED:
+                    // Nothing to do here. already handled by checkPhoneType above
+                    break;
             }
         }
     };
@@ -461,6 +477,7 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
             mCM.registerPhone(phone);
 
 
+            mPhoneType = phone.getPhoneType();
             NotificationMgr.init(this);
 
             phoneMgr = new PhoneInterfaceManager(this, phone);
@@ -615,7 +632,6 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
                     phone.getContext().getContentResolver(),
                     android.provider.Settings.Secure.PREFERRED_TTY_MODE,
                     Phone.TTY_MODE_OFF);
-            mHandler.sendMessage(mHandler.obtainMessage(EVENT_TTY_PREFERRED_MODE_CHANGED, 0));
         }
         // Read HAC settings and configure audio hardware
         if (getResources().getBoolean(R.bool.hac_enabled)) {
@@ -1462,9 +1478,13 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
             if (action.equals(Intent.ACTION_AIRPLANE_MODE_CHANGED)) {
-                boolean enabled = System.getInt(getContentResolver(),
-                        System.AIRPLANE_MODE_ON, 0) == 0;
-                phone.setRadioPower(enabled);
+                // When airplane mode is selected/deselected from settings
+                // AirplaneModeEnabler sets the value of extra "state" to
+                // true if airplane mode is enabled and false if it is
+                // disabled and broadcasts the intent. setRadioPower uses
+                // true if airplane mode is disabled and false if enabled.
+                boolean enabled = intent.getBooleanExtra("state",false);
+                phone.setRadioPower(!enabled);
             } else if (action.equals(BluetoothHeadset.ACTION_STATE_CHANGED)) {
                 mBluetoothHeadsetState = intent.getIntExtra(BluetoothHeadset.EXTRA_STATE,
                                                             BluetoothHeadset.STATE_ERROR);
@@ -1509,18 +1529,31 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
             } else if (action.equals(Intent.ACTION_BATTERY_LOW)) {
                 if (VDBG) Log.d(LOG_TAG, "mReceiver: ACTION_BATTERY_LOW");
                 notifier.sendBatteryLow();  // Play a warning tone if in-call
-            } else if ((action.equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED)) &&
-                    (mPUKEntryActivity != null)) {
-                // if an attempt to un-PUK-lock the device was made, while we're
-                // receiving this state change notification, notify the handler.
-                // NOTE: This is ONLY triggered if an attempt to un-PUK-lock has
-                // been attempted.
-                mHandler.sendMessage(mHandler.obtainMessage(EVENT_SIM_STATE_CHANGED,
-                        intent.getStringExtra(IccCard.INTENT_KEY_ICC_STATE)));
+            } else if ((action.equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED))) {
+                if (mPUKEntryActivity != null) {
+                    // if an attempt to un-PUK-lock the device was made, while we're
+                    // receiving this state change notification, notify the handler.
+                    // NOTE: This is ONLY triggered if an attempt to un-PUK-lock has
+                    // been attempted.
+                    mHandler.sendMessage(mHandler.obtainMessage(EVENT_SIM_STATE_CHANGED,
+                            intent.getStringExtra(IccCard.INTENT_KEY_ICC_STATE)));
+                }
+
+                String iccState = intent.getStringExtra(IccCard.INTENT_KEY_ICC_STATE);
+                String reason = intent.getStringExtra(IccCard.INTENT_KEY_LOCKED_REASON);
+                if ((reason != null) && (IccCard.INTENT_VALUE_ICC_LOCKED.equals(iccState))) {
+                    if (getResources().getBoolean(R.bool.ignore_perso_locked_events)) {
+                        // Some products don't have the concept of a perso lock.
+                        Log.i(LOG_TAG, "Ignoring ICC Perso Locked event "
+                              + "not showing Depersonalization screen for PIN entry");
+                    } else {
+                       showDepersonalizationScreen(reason);
+                    }
+                }
             } else if (action.equals(TelephonyIntents.ACTION_RADIO_TECHNOLOGY_CHANGED)) {
                 String newPhone = intent.getStringExtra(Phone.PHONE_NAME_KEY);
                 Log.d(LOG_TAG, "Radio technology switched. Now " + newPhone + " is active.");
-                initForNewRadioTechnology();
+                mHandler.sendEmptyMessage(EVENT_TECHNOLOGY_CHANGED);
             } else if (action.equals(TelephonyIntents.ACTION_SERVICE_STATE_CHANGED)) {
                 handleServiceStateChanged(intent);
             } else if (action.equals(TelephonyIntents.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED)) {
@@ -1619,12 +1652,8 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
     }
 
     private void handleServiceStateChanged(Intent intent) {
-        /**
-         * This used to handle updating EriTextWidgetProvider this routine
-         * and and listening for ACTION_SERVICE_STATE_CHANGED intents could
-         * be removed. But leaving just in case it might be needed in the near
-         * future.
-         */
+
+        // This function used to handle updating EriTextWidgetProvider
 
         // If service just returned, start sending out the queued messages
         ServiceState ss = ServiceState.newFromBundle(intent.getExtras());
@@ -1632,9 +1661,10 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
         boolean hasService = true;
         boolean isCdma = false;
         String eriText = "";
+        int state = ServiceState.STATE_POWER_OFF;
 
         if (ss != null) {
-            int state = ss.getState();
+            state = ss.getState();
             NotificationMgr.getDefault().updateNetworkSelection(state);
             switch (state) {
                 case ServiceState.STATE_OUT_OF_SERVICE:
@@ -1644,6 +1674,25 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
             }
         } else {
             hasService = false;
+        }
+
+        if ((state != ServiceState.STATE_POWER_OFF)
+                    && mTtyEnabled && !mTtySetOnPowerUp) {
+                /*
+                 * Force TTY update once after modem is on. This will send TTY
+                 * request to RIL. RIL will send configure request to CTT modem to do
+                 * CTM encoding/decoding - Ref:TS 26.226. UI will show TTY icon only
+                 * after RIL configures modem successfully.
+                 */
+                mHandler.sendMessage(mHandler.obtainMessage(EVENT_TTY_PREFERRED_MODE_CHANGED, 0));
+                mTtySetOnPowerUp = true;
+            }
+        if (state == ServiceState.STATE_POWER_OFF) {
+            /*
+             * Disable this flag so that TTY set will be send to RIL again after
+             * modem is available
+             */
+             mTtySetOnPowerUp = false;
         }
     }
 
@@ -1715,25 +1764,6 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
             Intent ttyModeChanged = new Intent(TtyIntent.TTY_ENABLED_CHANGE_ACTION);
             ttyModeChanged.putExtra("ttyEnabled", ttymode != Phone.TTY_MODE_OFF);
             sendBroadcast(ttyModeChanged);
-
-            String audioTtyMode;
-            switch (ttymode) {
-            case Phone.TTY_MODE_FULL:
-                audioTtyMode = "tty_full";
-                break;
-            case Phone.TTY_MODE_VCO:
-                audioTtyMode = "tty_vco";
-                break;
-            case Phone.TTY_MODE_HCO:
-                audioTtyMode = "tty_hco";
-                break;
-            case Phone.TTY_MODE_OFF:
-            default:
-                audioTtyMode = "tty_off";
-                break;
-            }
-            AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            audioManager.setParameters("tty_mode="+audioTtyMode);
         }
     }
 
@@ -1754,6 +1784,55 @@ public class PhoneApp extends Application implements AccelerometerListener.Orien
                     10*1000 /* 10 sec */);
         } catch (RemoteException ex) {
             // System process is dead.
+        }
+    }
+
+    private void showDepersonalizationScreen(String reason) {
+        int subtype = IccDepersonalizationConstants.ICC_SIM_NETWORK;
+
+        if(IccCard.INTENT_VALUE_LOCKED_NETWORK.equals(reason)) {
+           //Network Depersonalization is presently handled
+           //using dedicated Notification.
+           Log.i(LOG_TAG,"Ignoring SIM NETWORK Depersonalization "
+                 + "since this is handled differently");
+        } else if(IccCard.INTENT_VALUE_LOCKED_NETWORK_SUBSET.equals(reason)) {
+           Log.i(LOG_TAG,"SIM NETWORK SUBSET Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_SIM_NETWORK_SUBSET;
+        } else if(IccCard.INTENT_VALUE_LOCKED_CORPORATE.equals(reason)) {
+           Log.i(LOG_TAG,"SIM CORPORATE Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_SIM_CORPORATE;
+        } else if(IccCard.INTENT_VALUE_LOCKED_SERVICE_PROVIDER.equals(reason)) {
+           Log.i(LOG_TAG,"SIM SERVICE PROVIDER Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_SIM_SERVICE_PROVIDER;
+        } else if(IccCard.INTENT_VALUE_LOCKED_SIM.equals(reason)) {
+           Log.i(LOG_TAG,"SIM SIM Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_SIM_SIM;
+        } else if(IccCard.INTENT_VALUE_LOCKED_RUIM_NETWORK1.equals(reason)) {
+           Log.i(LOG_TAG,"RUIM NETWORK1 Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_RUIM_NETWORK1;
+        } else if(IccCard.INTENT_VALUE_LOCKED_RUIM_NETWORK2.equals(reason)) {
+           Log.i(LOG_TAG,"RUIM NETWORK2 Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_RUIM_NETWORK2;
+        } else if(IccCard.INTENT_VALUE_LOCKED_RUIM_HRPD.equals(reason)) {
+           Log.i(LOG_TAG,"RUIM HRPD Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_RUIM_HRPD;
+        } else if(IccCard.INTENT_VALUE_LOCKED_RUIM_CORPORATE.equals(reason)) {
+           Log.i(LOG_TAG,"RUIM CORPORATE Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_RUIM_CORPORATE;
+        } else if(IccCard.INTENT_VALUE_LOCKED_RUIM_SERVICE_PROVIDER.equals(reason)) {
+           Log.i(LOG_TAG,"RUIM SERVICE PROVIDER Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_RUIM_SERVICE_PROVIDER;
+        } else if(IccCard.INTENT_VALUE_LOCKED_RUIM_RUIM.equals(reason)) {
+           Log.i(LOG_TAG,"RUIM RUIM Depersonalization");
+           subtype = IccDepersonalizationConstants.ICC_RUIM_RUIM;
+        } else {
+           Log.e(LOG_TAG,"Unsupported Depersonalization: reason = " + reason);
+        }
+
+        if (subtype != IccDepersonalizationConstants.ICC_SIM_NETWORK) {
+            IccDepersonalizationPanel dpPanel =
+                 new IccDepersonalizationPanel(PhoneApp.getInstance(),subtype);
+            dpPanel.show();
         }
     }
 }

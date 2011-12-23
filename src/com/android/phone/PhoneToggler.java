@@ -1,3 +1,20 @@
+/*
+ * Copyright (C) 2006 The Android Open Source Project
+ * Copyright (c) 2009, Code Aurora Forum. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.android.phone;
 
 import android.content.BroadcastReceiver;
@@ -46,7 +63,7 @@ public class PhoneToggler extends BroadcastReceiver  {
             }
 		if (intent.getExtras()!=null) {
 			int networkMode = intent.getExtras().getInt(NETWORK_MODE); 
-			if (networkMode == Phone.NT_MODE_GSM_ONLY || networkMode == Phone.NT_MODE_WCDMA_PREF || networkMode == Phone.NT_MODE_WCDMA_ONLY) {
+			if (networkMode == Phone.NT_MODE_EVDO_NO_CDMA || networkMode == Phone.NT_MODE_CDMA_AND_LTE_EVDO || networkMode == Phone.NT_MODE_CDMA || networkMode == Phone.NT_MODE_LTE_ONLY) {
                 if (DBG) {
                 	Log.d(LOG_TAG,"Will modify it to: "+networkMode);
                 }
@@ -127,10 +144,10 @@ public class PhoneToggler extends BroadcastReceiver  {
                         modemNetworkMode == Phone.NT_MODE_CDMA ||
                         modemNetworkMode == Phone.NT_MODE_CDMA_NO_EVDO ||
                         modemNetworkMode == Phone.NT_MODE_EVDO_NO_CDMA ||
-                        //A modem might report world phone sometimes
-                        //but it's not true. Double check here
-                        (getPhone().getContext().getResources().getBoolean(R.bool.world_phone) == true &&
-                            modemNetworkMode == Phone.NT_MODE_GLOBAL) ) {
+                        modemNetworkMode == Phone.NT_MODE_GLOBAL ||
+                        modemNetworkMode == Phone.NT_MODE_LTE_ONLY ||
+                        modemNetworkMode == Phone.NT_MODE_CDMA_AND_LTE_EVDO ||
+                        modemNetworkMode == Phone.NT_MODE_GLOBAL_LTE) {
                     if (DBG) {
                         log("handleGetPreferredNetworkTypeResponse: if 1: modemNetworkMode = " +
                                 modemNetworkMode);
@@ -183,8 +200,4 @@ public class PhoneToggler extends BroadcastReceiver  {
     private static void log(String msg) {
         Log.d(LOG_TAG, msg);
     }
-
-
-
-    
 }
